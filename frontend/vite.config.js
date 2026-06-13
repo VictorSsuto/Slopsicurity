@@ -6,9 +6,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/scan': 'http://localhost:8000',
-      '/contact': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
+      '/scan': { target: 'http://localhost:8000', changeOrigin: true },
+      '/report': { target: 'http://localhost:8000', changeOrigin: true },
+      '/contact': { target: 'http://localhost:8000', changeOrigin: true },
+      '/health': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

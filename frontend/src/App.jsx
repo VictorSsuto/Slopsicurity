@@ -3,6 +3,10 @@ import ScoreHeader from './components/ScoreHeader'
 import ScannerSection from './components/ScannerSection'
 import Recommendations from './components/Recommendations'
 import ContactPage from './components/ContactPage'
+import DisclaimerPage from './components/DisclaimerPage'
+import HistoryPage, { saveToHistory } from './components/HistoryPage'
+import ShareModal from './components/ShareModal'
+import SharedReport from './components/SharedReport'
 
 const SCANNER_NAMES = [
   'SSL/TLS',
@@ -10,32 +14,55 @@ const SCANNER_NAMES = [
   'Technology Detection',
   'File Exposure',
   'DNS & Domain',
+  'Cookie Security',
 ]
 
 const STATES = { IDLE: 'idle', SCANNING: 'scanning', DONE: 'done', ERROR: 'error' }
 
 export default function App() {
-  const [url, setUrl]       = useState('')
-  const [state, setState]   = useState(STATES.IDLE)
-  const [steps, setSteps]   = useState([])
-  const [report, setReport] = useState(null)
-  const [error, setError]   = useState('')
+  const [url, setUrl]         = useState('')
+  const [state, setState]     = useState(STATES.IDLE)
+  const [steps, setSteps]     = useState([])
+  const [report, setReport]   = useState(null)
+  const [error, setError]     = useState('')
   const [noobify, setNoobify] = useState(false)
-  const [tab, setTab]       = useState('scanner') // 'scanner' | 'contact'
-  const [theme, setTheme]   = useState(() =>
-    localStorage.getItem('theme') || 'dark'
-  )
+  const [tab, setTab]         = useState('scanner')
+  const [theme, setTheme]     = useState(() => localStorage.getItem('theme') || 'dark')
+  const [pdfLoading, setPdfLoading]     = useState(false)
+  const [shareUrl, setShareUrl]         = useState('')
+  const [shareLoading, setShareLoading] = useState(false)
+  const [showShareModal, setShowShareModal] = useState(false)
+  // Shared-report mode: loaded from ?share= query param on startup
+  const [sharedReport, setSharedReport]           = useState(null)
+  const [sharedReportExpiry, setSharedReportExpiry] = useState(null)
+  const [sharedReportLoading, setSharedReportLoading] = useState(false)
+  const [sharedReportError, setSharedReportError]   = useState('')
   const esRef = useRef(null)
 
-  // Apply theme to <html>
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('theme', theme)
   }, [theme])
 
-  function toggleTheme() {
-    setTheme(t => t === 'dark' ? 'light' : 'dark')
-  }
+  // On mount: check for ?share= query param and load the shared report
+  useEffect(() => {
+    const shareId = new URLSearchParams(window.location.search).get('share')
+    if (!shareId) return
+    setSharedReportLoading(true)
+    fetch(`/report/share/${encodeURIComponent(shareId)}`)
+      .then(r => {
+        if (!r.ok) throw new Error('Report not found or has expired.')
+        return r.json()
+      })
+      .then(data => {
+        setSharedReport(data)
+        setSharedReportExpiry(data._expires_in_days ?? null)
+      })
+      .catch(e => setSharedReportError(e.message || 'Could not load report.'))
+      .finally(() => setSharedReportLoading(false))
+  }, [])
+
+  function toggleTheme() { setTheme(t => t === 'dark' ? 'light' : 'dark') }
 
   function initSteps() {
     return SCANNER_NAMES.map(name => ({ name, status: 'pending' }))
@@ -45,19 +72,48 @@ export default function App() {
     setSteps(prev => prev.map(s => s.name === name ? { ...s, status } : s))
   }
 
-  function handleSubmit(e) {
+  function validateUrl(raw) {
+    const s = raw.trim()
+    if (!s) return 'Please enter a URL.'
+    const withScheme = s.startsWith('http://') || s.startsWith('https://') ? s : 'https://' + s
+    try {
+      const u = new URL(withScheme)
+      if (!u.hostname.includes('.'))              return "That doesn't look like a real URL — make sure it has a domain (e.g. example.com)."
+      if (u.hostname.split('.').pop().length < 2) return 'Invalid domain extension.'
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) return 'IP addresses are not supported — please enter a domain name.'
+      return null
+    } catch {
+      return "That's not a valid URL. Try something like https://example.com."
+    }
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
-    if (!url.trim()) return
+    const validationError = validateUrl(url)
+    if (validationError) { setError(validationError); return }
 
     setState(STATES.SCANNING)
     setReport(null)
     setError('')
     setNoobify(false)
     setSteps(initSteps())
-
     if (esRef.current) esRef.current.close()
 
     const encoded = encodeURIComponent(url.trim())
+    try {
+      const check = await fetch(`/scan/verify?url=${encoded}`)
+      if (!check.ok) {
+        const data = await check.json().catch(() => ({}))
+        setState(STATES.IDLE)
+        setError(data.detail || 'Could not reach that URL.')
+        return
+      }
+    } catch {
+      setState(STATES.IDLE)
+      setError('Could not connect to the scanner. Make sure the API server is running.')
+      return
+    }
+
     const es = new EventSource(`/scan/stream?url=${encoded}`)
     esRef.current = es
 
@@ -68,8 +124,10 @@ export default function App() {
     })
 
     es.addEventListener('complete', e => {
-      setReport(JSON.parse(e.data))
+      const r = JSON.parse(e.data)
+      setReport(r)
       setState(STATES.DONE)
+      saveToHistory(r)
       es.close()
     })
 
@@ -89,25 +147,102 @@ export default function App() {
     setNoobify(false)
   }
 
+  async function downloadPdf() {
+    if (!report) return
+    setPdfLoading(true)
+    try {
+      const resp = await fetch('/report/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(report),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        alert('PDF generation failed: ' + (err.detail || resp.status))
+        return
+      }
+      const blob = await resp.blob()
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href     = url
+      a.download = `slopsicurity-${report.url.replace(/[^a-z0-9]/gi, '-').slice(0, 50)}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch { alert('PDF generation failed.') }
+    finally { setPdfLoading(false) }
+  }
+
+  async function shareReport() {
+    if (!report) return
+    setShareLoading(true)
+    try {
+      const resp = await fetch('/report/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(report),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        alert('Could not create share link: ' + (err.detail || resp.status))
+        return
+      }
+      const data = await resp.json()
+      setShareUrl(data.url)
+      setShowShareModal(true)
+    } catch { alert('Could not create share link.') }
+    finally { setShareLoading(false) }
+  }
+
+  // Load a historical report back into the results view
+  function loadHistoryReport(r) {
+    setReport(r)
+    setState(STATES.DONE)
+    setTab('scanner')
+    setNoobify(false)
+  }
+
+  // ── Shared-report mode ───────────────────────────────────────────────────────
+  if (sharedReportLoading) {
+    return (
+      <div className="layout">
+        <div className="shared-loading">Loading report…</div>
+      </div>
+    )
+  }
+
+  if (sharedReportError) {
+    return (
+      <div className="layout">
+        <div className="shared-loading">
+          <p style={{ color: 'var(--fail)', marginBottom: 12 }}>{sharedReportError}</p>
+          <a href="/" style={{ color: 'var(--muted-2)', fontSize: 13 }}>Run a new scan →</a>
+        </div>
+      </div>
+    )
+  }
+
+  if (sharedReport) {
+    return (
+      <div className="layout">
+        <SharedReport report={sharedReport} expiresInDays={sharedReportExpiry} />
+      </div>
+    )
+  }
+
   return (
     <div className="layout">
+      {showShareModal && (
+        <ShareModal shareUrl={shareUrl} onClose={() => setShowShareModal(false)} />
+      )}
       <nav className="nav">
         <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
           <span className="nav-logo" style={{ cursor: 'pointer' }} onClick={() => { reset(); setTab('scanner') }}>
             Slopsicurity
           </span>
-          <button
-            className={`nav-link ${tab === 'scanner' ? 'active' : ''}`}
-            onClick={() => setTab('scanner')}
-          >
-            Scanner
-          </button>
-          <button
-            className={`nav-link ${tab === 'contact' ? 'active' : ''}`}
-            onClick={() => setTab('contact')}
-          >
-            Contact
-          </button>
+          <button className={`nav-link ${tab === 'scanner'    ? 'active' : ''}`} onClick={() => setTab('scanner')}>Scanner</button>
+          <button className={`nav-link ${tab === 'history'    ? 'active' : ''}`} onClick={() => setTab('history')}>History</button>
+          <button className={`nav-link ${tab === 'contact'    ? 'active' : ''}`} onClick={() => setTab('contact')}>Contact</button>
+          <button className={`nav-link ${tab === 'disclaimer' ? 'active' : ''}`} onClick={() => setTab('disclaimer')}>How it works</button>
         </div>
         <div className="nav-right">
           <label className="toggle-wrap" onClick={toggleTheme}>
@@ -119,34 +254,35 @@ export default function App() {
         </div>
       </nav>
 
-      {tab === 'contact' && (
-        <ContactPage lastReport={report} />
-      )}
+      {tab === 'contact'    && <ContactPage lastReport={report} />}
+      {tab === 'disclaimer' && <DisclaimerPage />}
+      {tab === 'history'    && <HistoryPage onLoadReport={loadHistoryReport} />}
 
       {tab === 'scanner' && state === STATES.IDLE && (
         <div className="fade-in">
           <div className="hero">
             <h1 className="hero-title">Security scan.<br />No nonsense.</h1>
             <p className="hero-sub">
-              Passive, non-invasive checks. SSL, headers, DNS, file exposure, tech detection.
+              Passive, non-invasive checks. SSL, headers, DNS, file exposure, tech detection, cookies.
               Results in seconds.
             </p>
           </div>
           <form className="scan-form" onSubmit={handleSubmit}>
             <input
-              className="url-input"
+              className={`url-input ${error ? 'url-input-error' : ''}`}
               type="text"
               placeholder="https://example.com"
               value={url}
-              onChange={e => setUrl(e.target.value)}
+              onChange={e => { setUrl(e.target.value); setError('') }}
               spellCheck={false}
               autoFocus
             />
-            <button className="scan-btn" type="submit" disabled={!url.trim()}>
-              Scan
-            </button>
+            <button className="scan-btn" type="submit" disabled={!url.trim()}>Scan</button>
           </form>
-          <p className="scan-hint">look, don't touch.</p>
+          {error
+            ? <p className="url-error">{error}</p>
+            : <p className="scan-hint">look, don't touch.</p>
+          }
         </div>
       )}
 
@@ -182,6 +318,20 @@ export default function App() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="new-scan-btn" onClick={reset}>← New scan</button>
               <button className="new-scan-btn" onClick={() => setTab('contact')}>Get help</button>
+              <button
+                className="pdf-btn"
+                onClick={downloadPdf}
+                disabled={pdfLoading}
+              >
+                {pdfLoading ? 'Generating…' : '↓ PDF'}
+              </button>
+              <button
+                className="share-btn"
+                onClick={shareReport}
+                disabled={shareLoading}
+              >
+                {shareLoading ? 'Saving…' : '⤴ Share'}
+              </button>
             </div>
             <label className="toggle-wrap" onClick={() => setNoobify(n => !n)}>
               <span className="toggle-label">Noobify</span>
@@ -195,11 +345,7 @@ export default function App() {
 
           <div className="sections">
             {report.scanners.map(scanner => (
-              <ScannerSection
-                key={scanner.name}
-                scanner={scanner}
-                noobify={noobify}
-              />
+              <ScannerSection key={scanner.name} scanner={scanner} noobify={noobify} />
             ))}
           </div>
 

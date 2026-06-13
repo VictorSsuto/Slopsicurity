@@ -16,6 +16,9 @@ build/
 *.json
 reports/
 
+# SQLite report database (shared report store)
+data/
+
 # IDE
 .vscode/
 .idea/

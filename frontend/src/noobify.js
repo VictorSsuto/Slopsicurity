@@ -187,6 +187,25 @@ const NOOBIFY_MAP = {
     "any of the hundreds of certificate authorities in the world could be tricked or compromised " +
     "into issuing a fake certificate for your site."
   ),
+
+  // ── Cookie Security ────────────────────────────────────────────────────────
+  cookie_httponly: (
+    "Some of your site's cookies are readable by JavaScript. This matters because if an attacker " +
+    "ever manages to inject a malicious script into your page (XSS), the first thing it does is " +
+    "steal session cookies to hijack accounts. HttpOnly makes cookies invisible to scripts — " +
+    "even if the attacker's code runs, it can't grab them."
+  ),
+  cookie_secure: (
+    "Some cookies are being sent over unencrypted connections. If a visitor accidentally loads " +
+    "your site over HTTP (not HTTPS), their cookies — including login sessions — travel in plain " +
+    "text. The Secure flag prevents this by making the browser only ever send the cookie over HTTPS."
+  ),
+  cookie_samesite: (
+    "Some cookies are missing CSRF protection. Without SameSite, a malicious website the user " +
+    "is visiting can secretly make requests to your site and their browser will automatically " +
+    "include their session cookie — tricking your site into thinking it's them. SameSite=Strict " +
+    "tells the browser to never send the cookie from an external site."
+  ),
 }
 
 /**

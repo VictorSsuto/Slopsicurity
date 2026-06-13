@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const CALENDLY_URL = 'https://calendly.com/slopsicurity' // replace with your real link
+const CALENDLY_URL = 'https://calendly.com/slopsicurity/30min'
 
 export default function ContactPage({ lastReport }) {
   const [form, setForm] = useState({

@@ -9,7 +9,7 @@ HEADER_CHECKS = [
         "hdr_hsts",
         "HSTS (Strict-Transport-Security)",
         10,
-        "Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+        "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
         lambda v: "max-age" in v.lower(),
     ),
     (
@@ -17,18 +17,15 @@ HEADER_CHECKS = [
         "hdr_csp",
         "Content-Security-Policy",
         15,
-        (
-            "Define a CSP header to prevent XSS. Start with: "
-            "Content-Security-Policy: default-src 'self'"
-        ),
+        "Define a CSP to prevent XSS. Start with: Content-Security-Policy: default-src 'self'",
         lambda v: len(v) > 5,
     ),
     (
         "X-Frame-Options",
         "hdr_xfo",
-        "X-Frame-Options (Clickjacking Protection)",
+        "Clickjacking Protection (X-Frame-Options / CSP frame-ancestors)",
         8,
-        "Add header: X-Frame-Options: DENY  (or use CSP frame-ancestors directive).",
+        "Add: X-Frame-Options: DENY  — or use Content-Security-Policy: frame-ancestors 'none'",
         lambda v: v.upper() in ("DENY", "SAMEORIGIN"),
     ),
     (
@@ -36,7 +33,7 @@ HEADER_CHECKS = [
         "hdr_xcto",
         "X-Content-Type-Options (MIME Sniffing)",
         8,
-        "Add header: X-Content-Type-Options: nosniff",
+        "Add: X-Content-Type-Options: nosniff",
         lambda v: v.lower() == "nosniff",
     ),
     (
@@ -44,7 +41,7 @@ HEADER_CHECKS = [
         "hdr_rp",
         "Referrer-Policy",
         5,
-        "Add header: Referrer-Policy: strict-origin-when-cross-origin",
+        "Add: Referrer-Policy: strict-origin-when-cross-origin",
         lambda v: len(v) > 0,
     ),
     (
@@ -52,19 +49,17 @@ HEADER_CHECKS = [
         "hdr_pp",
         "Permissions-Policy",
         5,
-        (
-            "Add header: Permissions-Policy: geolocation=(), microphone=(), camera=() "
-            "to restrict browser feature access."
-        ),
+        "Add: Permissions-Policy: geolocation=(), microphone=(), camera=() to restrict feature access.",
         lambda v: len(v) > 0,
     ),
     (
         "X-XSS-Protection",
         "hdr_xxp",
-        "X-XSS-Protection (legacy)",
+        "X-XSS-Protection Configured",
         3,
-        "Add header: X-XSS-Protection: 1; mode=block (legacy browsers).",
-        lambda v: v.startswith("1"),
+        "Set X-XSS-Protection: 0 (recommended — disables the buggy legacy filter) "
+        "or 1; mode=block for older browser support.",
+        lambda v: len(v) > 0,  # Pass if present — both "0" and "1" are intentional
     ),
 ]
 
@@ -107,9 +102,18 @@ class HeadersScanner(BaseScanner):
                 recommendation=None if valid else reco,
             ))
 
+        # Post-process: X-Frame-Options passes if CSP already has frame-ancestors
+        csp_value = headers.get("content-security-policy", "")
+        if "frame-ancestors" in csp_value.lower():
+            for f in result.findings:
+                if f.check_id == "hdr_xfo" and not f.passed:
+                    f.passed = True
+                    f.score = f.max_score
+                    f.detail += " — frame-ancestors in CSP provides equivalent protection"
+                    f.recommendation = None
+
         for hdr_name, check_id, label, max_score, reco in LEAKY_HEADERS:
             value = headers.get(hdr_name.lower(), "")
-            # Pass = header absent or value doesn't reveal version info
             leaking = bool(value) and any(c.isdigit() for c in value)
             passed = not leaking
             result.findings.append(Finding(

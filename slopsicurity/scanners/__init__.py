@@ -3,6 +3,7 @@ from .headers import HeadersScanner
 from .tech_detect import TechScanner
 from .file_exposure import FileExposureScanner
 from .dns_info import DNSScanner
+from .cookie_check import CookieScanner
 
 ALL_SCANNERS = [
     SSLScanner,
@@ -10,4 +11,5 @@ ALL_SCANNERS = [
     TechScanner,
     FileExposureScanner,
     DNSScanner,
+    CookieScanner,
 ]
